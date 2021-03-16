@@ -1,28 +1,44 @@
 provider "aws" {
-  version = "~> 3.0"
+  version = "~> 2.0"
   region  = var.region
 }
 
-resource "aws_vpc" "hashicat" {
+locals {
+  common_tags = {
+    Environment   = var.Environment,
+    Project       = var.Project,
+    Team          = var.Team,
+    ApplicationID = var.ApplicationID,
+    CostCenter    = var.CostCenter,
+    Workspace     = var.TFC_WORKSPACE_NAME
+  }
+}
+
+
+resource aws_vpc "hashicat" {
   cidr_block           = var.address_space
   enable_dns_hostnames = true
 
-  tags = {
-    name = "${var.prefix}-vpc-${var.region}"
-    environment = "Production"
-  }
+  tags = merge(local.common_tags,
+    {
+      Name = "${var.prefix}-vpc"
+    }
+  )
 }
 
-resource "aws_subnet" "hashicat" {
+
+resource aws_subnet "hashicat" {
   vpc_id     = aws_vpc.hashicat.id
   cidr_block = var.subnet_prefix
 
-  tags = {
-    name = "${var.prefix}-subnet"
-  }
+  tags = merge(local.common_tags,
+    {
+      Name = "${var.prefix}-subnet"
+    }
+  )
 }
 
-resource "aws_security_group" "hashicat" {
+resource aws_security_group "hashicat" {
   name = "${var.prefix}-security-group"
 
   vpc_id = aws_vpc.hashicat.id
@@ -31,21 +47,21 @@ resource "aws_security_group" "hashicat" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["121.6.14.14/32", "0.0.0.0/0"]
   }
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["121.6.14.14/32"]
   }
 
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["121.6.14.14/32"]
   }
 
   egress {
@@ -56,25 +72,29 @@ resource "aws_security_group" "hashicat" {
     prefix_list_ids = []
   }
 
-  tags = {
-    Name = "${var.prefix}-security-group"
-  }
+  tags = merge(local.common_tags,
+    {
+      Name = "${var.prefix}-security-group"
+    }
+  )
 }
 
-resource "random_id" "app-server-id" {
+resource random_id "app-server-id" {
   prefix      = "${var.prefix}-hashicat-"
   byte_length = 8
 }
 
-resource "aws_internet_gateway" "hashicat" {
+resource aws_internet_gateway "hashicat" {
   vpc_id = aws_vpc.hashicat.id
 
-  tags = {
-    Name = "${var.prefix}-internet-gateway"
-  }
+  tags = merge(local.common_tags,
+    {
+      Name = "${var.prefix}-internet-gateway"
+    }
+  )
 }
 
-resource "aws_route_table" "hashicat" {
+resource aws_route_table "hashicat" {
   vpc_id = aws_vpc.hashicat.id
 
   route {
@@ -83,12 +103,12 @@ resource "aws_route_table" "hashicat" {
   }
 }
 
-resource "aws_route_table_association" "hashicat" {
+resource aws_route_table_association "hashicat" {
   subnet_id      = aws_subnet.hashicat.id
   route_table_id = aws_route_table.hashicat.id
 }
 
-data "aws_ami" "ubuntu" {
+data aws_ami "ubuntu" {
   most_recent = true
 
   filter {
@@ -115,8 +135,8 @@ resource "aws_eip_association" "hashicat" {
   allocation_id = aws_eip.hashicat.id
 }
 
-resource "aws_instance" "hashicat" {
-  ami                         = data.aws_ami.ubuntu.id
+resource aws_instance "hashicat" {
+  ami = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
   key_name                    = aws_key_pair.hashicat.key_name
   associate_public_ip_address = true
@@ -124,28 +144,26 @@ resource "aws_instance" "hashicat" {
   vpc_security_group_ids      = [aws_security_group.hashicat.id]
 
   tags = {
-    Name = "${var.prefix}-hashicat-instance"
+    Name          = "${var.prefix}-hashicat-instance",
+    Environment   = var.Environment,
+    Project       = var.Project,
+    Team          = var.Team,
+    ApplicationID = var.ApplicationID,
+    CostCenter    = var.CostCenter,
+    Workspace     = var.TFC_WORKSPACE_NAME
   }
+
 }
 
 # We're using a little trick here so we can run the provisioner without
 # destroying the VM. Do not do this in production.
 
-# If you need ongoing management (Day N) of your virtual machines a tool such
-# as Chef or Puppet is a better choice. These tools track the state of
-# individual files and can keep them in the correct configuration.
-
-# Here we do the following steps:
-# Sync everything in files/ to the remote VM.
-# Set up some environment variables for our script.
-# Add execute permissions to our scripts.
-# Run the deploy_app.sh script.
 resource "null_resource" "configure-cat-app" {
   depends_on = [aws_eip_association.hashicat]
 
   triggers = {
-    build_number = timestamp()
-  }
+     build_number = timestamp()
+   }
 
   provisioner "file" {
     source      = "files/"
@@ -167,9 +185,7 @@ resource "null_resource" "configure-cat-app" {
       "sudo systemctl start apache2",
       "sudo chown -R ubuntu:ubuntu /var/www/html",
       "chmod +x *.sh",
-      "PLACEHOLDER=${var.placeholder} WIDTH=${var.width} HEIGHT=${var.height} PREFIX=${var.prefix} ./deploy_app.sh",
-      "sudo apt -y install cowsay",
-      "cowsay Mooooooooooo!",
+      "PLACEHOLDER=${var.placeholder} WIDTH=${var.width} HEIGHT=${var.height} PREFIX=${var.prefix} EXAMPLE=${var.example} ./deploy_app.sh",
     ]
 
     connection {
@@ -181,15 +197,16 @@ resource "null_resource" "configure-cat-app" {
   }
 }
 
-resource "tls_private_key" "hashicat" {
+resource tls_private_key "hashicat" {
   algorithm = "RSA"
 }
 
 locals {
-  private_key_filename = "${random_id.app-server-id.dec}-ssh-key.pem"
+  private_key_filename = "${var.TFC_WORKSPACE_NAME}-${var.prefix}-ssh-key.pem"
 }
 
-resource "aws_key_pair" "hashicat" {
+resource aws_key_pair "hashicat" {
   key_name   = local.private_key_filename
   public_key = tls_private_key.hashicat.public_key_openssh
 }
+
